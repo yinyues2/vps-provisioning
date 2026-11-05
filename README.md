@@ -89,7 +89,14 @@ UseDNS no
 ```
 
 **必须 `00-` 前缀**：OpenSSH 取「首个出现的值」，镜像自带的 `50-cloud-init.conf`（常写 `PasswordAuthentication no`，但 cloud-init 重推会变）与 `50-*.conf` 会压过 `99-` 前缀的文件。
-`--stage final` 只做一件事：删掉 `Port 22` 行 + reload + 外部探测 22 应为 `Connection refused`。
+
+**只写自己的 00- 文件还不够**（2026-11-05 补）：字典序早于 `00-hermes-hardening.conf` 的供应商文件（实测 `00-jcloud.conf`、`01-passwordauthentication.conf`）照样会赢，而且不报错。脚本现在会：
+
+1. 就地改写**主配置 + 所有 drop-in** 里的 `PasswordAuthentication` / `PermitRootLogin` / `KbdInteractiveAuthentication` / `ChallengeResponseAuthentication`（先整目录备份 `/root/sshd.bak-<date>`）；
+2. reload 后跑**硬断言**：`sshd -T` 必须是 `passwordauthentication no` + `kbdinteractiveauthentication no` + `permitrootlogin without-password`，任一不符 → 还原 `/etc/ssh` + reload + 退出非 0（不留「以为加固了」的机器）；
+3. 主配置没有 `Include sshd_config.d` 时（阿里云 Linux 8 这类），直接改主配置并告警——drop-in 写了也不会被读。
+
+`--stage final` 只做一件事：删掉 `Port 22` 行 + reload + 外部探测 22 应为 `Connection refused`（同样带断言）。
 
 **实测**：`port 52222`、`permitrootlogin without-password`、`passwordauthentication no`、`maxauthtries 3`、`x11forwarding no`、`allowagentforwarding no`；云端/性能机各两次登录成功；22 外部探测 refused。
 
@@ -309,7 +316,8 @@ TERM=xterm-256color bash /root/tq.sh --all      # 没有 TERM 会直接 exit 1
 
 ## 5. 常见坑（全部实测踩过）
 
-1. **drop-in 前缀**：`99-` 会被 `50-cloud-init.conf` 压掉 → 必须 `00-`。
+1. **drop-in 前缀**：`99-` 会被 `50-cloud-init.conf` 压掉 → 必须 `00-`；而字典序排在我们前面的供应商文件（`00-jcloud.conf`）同样会赢 → 必须就地改写它们的值 + 用 `sshd -T` 硬断言（脚本已内置）。
+1b. **「只做链路/当中转」的机器也必须跑 02**：野草云香港（2026-11-01 接入，只配了 realm/sing-box）整台跳过了开荒，`sshd_config` 停在镜像日期、`PasswordAuthentication yes`、`PermitRootLogin yes`，四天无人发现——开荒不是「装业务的机器才做」，接入即跑。
 2. **sysctl 前缀**：`99-*` 会被 `local.conf` 压掉（字典序数字 < 字母）→ 必须 `zz-*`。
 3. **`sshd -T` 非 root 拿不到有效值**：无 sudo 的机器要走提权脚本。
 4. **fail2ban 写了 `[sshd]` 不带 backend** → 打回 polling → failed。
